@@ -26,12 +26,103 @@ import os
 import sys
 import time
 import re
+import ConfigParser
+import argparse
+import logging
 
-from subprocess import check_output, CalledProcessError
+from apiclient.errors import HttpError
 from apiclient.discovery import build
+from subprocess import check_output, CalledProcessError
 from oauth2client.file import Storage
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.tools import run
+
+""" ParseArgs()
+    Return: object with all the cli arguments
+
+    Parse the cli arguments and return them
+"""
+def ParseArgs():
+  parser = argparse.ArgumentParser(description="Your personal YouTube donwload Daemon")
+  parser.add_argument("-c", "--config", metavar="PATH", help="Custom config path")
+  args = vars(parser.parse_args())
+  return args
+
+
+""" Read_Config(path = None)
+        path = Path where the config file is stored (optional)
+    Return: Dictionary with the config
+
+    Read the config file from path and initialize the variables
+"""
+def Read_Config(path = None):
+  retConfig = {}
+
+  if path is None:
+    if os.getenv("XDG_CONFIG_HOME") is not None:
+      path = os.path.join(os.getenv("XDG_CONFIG_HOME",
+                                    "YourTubeDaemon/config.cfg"))
+    else:
+      path = os.path.join(os.path.expanduser("~"),
+                          ".config/YourTubeDaemon/config.cfg")
+  
+  config = ConfigParser.SafeConfigParser()
+  config.read(path)
+
+  try:
+    retConfig['MusicSavePath'] = config.get("Settings", "MusicSavePath")
+    retConfig['CheckIntervalSec'] = config.getint("Settings", "CheckIntervalSec")
+    retConfig['LogSavePath'] = config.get("Settings", "LogSavePath")
+    retConfig['PlaylistName'] = config.get("Settings", "PlaylistName")
+    retConfig['ApiSecretsFile'] = config.get("Settings", "ApiSecretsFile")
+  except ConfigParser.Error as e:
+    logging.warning("Error while reading config file")
+    logging.warning("CONFIG args: {0}".format(e.args))
+    logging.warning("CONFIG message: {0}".format(e.message))
+    Write_Config()
+    retConfig = Read_Config()
+
+  return retConfig
+
+
+""" Write_Config()
+
+    Used to write the default config file if it is missing and init the variables
+"""
+def Write_Config():
+  if os.getenv("XDG_CONFIG_HOME") is not None:
+    defaultPath = os.path.join(os.getenv("XDG_CONFIG_HOME", "YourTubeDaemon"))
+  else:
+    defaultPath = os.path.join(os.path.expanduser("~"),".config/YourTubeDaemon")
+  config = ConfigParser.SafeConfigParser()
+  
+  config.add_section("Settings")
+  config.set("Settings", "MusicSavePath", os.path.join(os.path.expanduser("~"),
+                                                      "Music/YourTubeDaemon"))
+  config.set("Settings", "CheckIntervalSec", "300")
+  config.set("Settings", "LogSavePath", os.path.join(defaultPath, "daemon.log"))
+  config.set("Settings", "PlaylistName", "YourTubeDaemon")
+  config.set("Settings", "ApiSecretsFile", os.path.join(defaultPath,
+                                                        "client_secrets.json"))
+  
+  if not os.path.exists(defaultPath):
+    logging.info("Creating default config path: {0}".format(defaultPath))
+    os.makedirs(defaultPath)
+  with open(os.path.join(defaultPath, "config.cfg"), "w+b") as configFile:
+    config.write(configFile)
+
+
+""" Remove_Unfinished(folder, pattern)
+        folder = folder that contains the unfinished files
+        pattern = name of the files as regex pattern
+
+    Remove all the unfinished/interrupted downloads of youtube-dl
+"""
+def Remove_Unfinished(folder, pattern):
+  for f in os.listdir(folder):
+    if re.search(pattern, f):
+      os.remove(os.path.join(folder, f))
+
 
 """ Format_FileName(input)
         input = InputName which will be formated
@@ -57,16 +148,16 @@ def Format_FileName(input):
   return input
 
 
-""" Login()
+""" Login(CLIENT_SECRETS_FILE = "client_secrets.json")
+        CLIENT_SECRETS_FILE = Path to client_secrets file
     Return: SessionId
     
     Login to your YouTube account using client_secrets.json
     Request read/write permission on YouTube
 """
-def Login():
-  CLIENT_SECRETS_FILE = "client_secrets.json"
+def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
   MISSING_CLIENT_SECRETS_MESSAGE = """
-      You are missing the {0} file in {1}!!""".format(CLIENT_SECRETS_FILE, os.getcwd())
+      You are missing the {0} file!!""".format(CLIENT_SECRETS_FILE)
 
   YOUTUBE_READ_WRITE_SCOPE = "https://www.googleapis.com/auth/youtube"
   YOUTUBE_API_SERVICE_NAME = "youtube"
@@ -76,7 +167,8 @@ def Login():
       message=MISSING_CLIENT_SECRETS_MESSAGE,
       scope=YOUTUBE_READ_WRITE_SCOPE)
   
-  storage = Storage("{0}-oauth2.json".format(sys.argv[0]))
+  storage = Storage(os.path.join(
+    os.path.dirname(CLIENT_SECRETS_FILE),"{0}-oauth2.json".format(sys.argv[0])))
   credentials = storage.get()
   
   if credentials is None or credentials.invalid:
@@ -110,18 +202,25 @@ def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
       retPlaylist = playlist["id"]
 
   if retPlaylist is None:
-    playlist_insert_response = youtube.playlists().insert(
-      part="snippet,status",
-      body=dict(
-        snippet=dict(
-          title=YOURTUBEDAEMON_PLAYLIST_NAME,
-          description=YOURTUBEDAEMON_PLAYLIST_DESCRIPTION
-      ),
-        status=dict(
-          privacyStatus="private"
+    try:
+      youtube.playlists().insert(
+        part="snippet,status",
+        body=dict(
+          snippet=dict(
+            title=YOURTUBEDAEMON_PLAYLIST_NAME,
+            description=YOURTUBEDAEMON_PLAYLIST_DESCRIPTION
+        ),
+          status=dict(
+            privacyStatus="private"
+          )
         )
-      )
-    ).execute()
+      ).execute()
+    except HttpError as e:
+      logging.fatal("Init_Playlist: Can't create the playlist")
+      logging.fatal("Init_Playlist args: {0}".format(e.args))
+      logging.fatal("Init_Playlist message: {0}".format(e.message))
+      exit(1)
+    time.sleep(1) #give YouTube time to create the playlist
 
   return retPlaylist
 
@@ -134,10 +233,16 @@ def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
     Get all the videos in the YourTubeDaemon playlist and return a list
 """
 def Get_Videos(youtube, yourtube_playlistID):
-  playlistitems_list_response = youtube.playlistItems().list(
-    part="id,snippet",
-    playlistId=yourtube_playlistID
-  ).execute()
+  try:
+    playlistitems_list_response = youtube.playlistItems().list(
+      part="id,snippet",
+      playlistId=yourtube_playlistID
+    ).execute()
+  except HttpError as e:
+    logging.error("Get_Videos: Can't get Videos in Playlist")
+    logging.error("Get_Videos message: {0}".format(e.message))
+    logging.error("Get_Videos args: {0}".format(e.args))
+    return None
 
   videoList = []
   for items in playlistitems_list_response["items"]:
@@ -163,12 +268,24 @@ def Get_Videos(youtube, yourtube_playlistID):
 def main():
   YOURTUBEDAEMON_PLAYLIST_ID = None
   SESSION = None
+  
+  CONFIGPATH = None
+  args = ParseArgs()
+  if args['config']:
+    CONFIGPATH = args['config']
+  cfg = Read_Config(CONFIGPATH)
 
-  SESSION = Login()
-  YOURTUBEDAEMON_PLAYLIST_ID = Init_Playlist(SESSION)
+  logging.basicConfig(filename=cfg['LogSavePath'], filemode='w',
+                      level=logging.INFO)
 
+  Remove_Unfinished(os.path.dirname(os.path.realpath(__file__)), ".*.part")
+  SESSION = Login(cfg['ApiSecretsFile'])
+  
   while True:
     videos = Get_Videos(SESSION, YOURTUBEDAEMON_PLAYLIST_ID)
+    if videos is None:
+      YOURTUBEDAEMON_PLAYLIST_ID = Init_Playlist(SESSION, cfg['PlaylistName'])
+      continue
 
     if len(videos) != 0:
       try:
@@ -180,27 +297,32 @@ def main():
 
             regexResult = re.search('(?<=\[ffmpeg\] Destination: )(.*?)(\..{3})', output, re.I)
             newName = Format_FileName(videoItem[0])
-            os.rename(regexResult.group(0), newName + regexResult.group(2))
+            savePath = os.path.join(cfg['MusicSavePath'],newName +
+                                    regexResult.group(2))
+            logging.info("Downloaded: {0}".format(savePath))
 
+            if not os.path.exists(os.path.dirname(savePath)):
+              logging.info("Creating MusicSavePath:{0}".format(cfg['MusicSavePath']))
+              os.makedirs(os.path.dirname(savePath))
+            os.rename(regexResult.group(0), savePath)
+            
+            try:
+              SESSION.playlistItems().delete(
+                id=videoItem[2]
+              ).execute()
+            except HttpError as e:
+              logging.warning("main: Couldn't remove video from playlist")
+              logging.warning("main args: {0}".format(e.args))
+              logging.warning("main message: {0}".format(e.message))
 
-            playlistitems_delete_response = SESSION.playlistItems().delete(
-              id=videoItem[2]
-            ).execute()
-          
           videos = []
       except CalledProcessError as e:
-        print "returncode: {0}".format(e.returncode)
-        print " cmd: {0}".format(e.cmd)
-        print " output: {0}".format(e.output)
+        logging.error("Youtube-dl encountered an error")
+        logging.error("YT-dl: {0}".format(e.returncode))
+        logging.error("YT-dl: {0}".format(e.cmd))
+        logging.error("YT-dl: {0}".format(e.output))
 
-    time.sleep(5) #TODO should be more time (5 * 60)
+    time.sleep(cfg['CheckIntervalSec'])
 
 if __name__ == "__main__":
   main()
-
-#TODO add better comments
-#TODO add logging
-#TODO add better exception handling
-#TODO renove unfinished/interrupted downloads *.part
-#TODO add cli options
-#TODO add configuration file 
