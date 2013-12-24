@@ -45,6 +45,8 @@ from oauth2client.tools import run
 def ParseArgs():
   parser = argparse.ArgumentParser(description="Your personal YouTube donwload Daemon")
   parser.add_argument("-c", "--config", metavar="PATH", help="Custom config path")
+  parser.add_argument("-r", "--rate-limit", metavar="LIMIT",
+              help="maximum download rate in bytes per second (e.g. 50K or 4.2M)")
   args = vars(parser.parse_args())
   return args
 
@@ -75,6 +77,7 @@ def Read_Config(path = None):
     retConfig['LogSavePath'] = config.get("Settings", "LogSavePath")
     retConfig['PlaylistName'] = config.get("Settings", "PlaylistName")
     retConfig['ApiSecretsFile'] = config.get("Settings", "ApiSecretsFile")
+    retConfig['RateLimit'] = config.get("Settings", "RateLimit")
   except ConfigParser.Error as e:
     logging.warning("Error while reading config file")
     logging.warning("CONFIG args: {0}".format(e.args))
@@ -104,6 +107,7 @@ def Write_Config():
   config.set("Settings", "PlaylistName", "YourTubeDaemon")
   config.set("Settings", "ApiSecretsFile", os.path.join(defaultPath,
                                                         "client_secrets.json"))
+  config.set("Settings", "RateLimit", "None")
   
   if not os.path.exists(defaultPath):
     logging.info("Creating default config path: {0}".format(defaultPath))
@@ -278,6 +282,17 @@ def main():
   logging.basicConfig(filename=cfg['LogSavePath'], filemode='w',
                       level=logging.INFO)
 
+  downloadArgs = ["youtube-dl", "-f",
+                  "141/172/38/37/46/45/22/102/101/85/84/171/141/120/100/44/43/35/34/83/82/18/17/6/5/139/36/17",
+                  "-o", "%(id)s.%(ext)s", "--extract-audio", "--audio-format",
+                  "best", "--audio-quality", "0", "--no-continue"]
+  if cfg['RateLimit'] != "None" or args['rate_limit']:
+    if cfg['RateLimit'] != "None":
+      limit = cfg['RateLimit']
+    if args['rate_limit']:
+      limit = args['rate_limit']
+  downloadArgs.extend(["--rate-limit", limit])
+
   Remove_Unfinished(os.path.dirname(os.path.realpath(__file__)), ".*.part")
   SESSION = Login(cfg['ApiSecretsFile'])
   
@@ -290,11 +305,10 @@ def main():
     if len(videos) != 0:
       try:
           for videoItem in videos:
-            output = check_output(["youtube-dl", "-f",
-                "141/172/38/37/46/45/22/102/101/85/84/171/141/120/100/44/43/35/34/83/82/18/17/6/5/139/36/17",
-                "-o", "%(id)s.%(ext)s", "--extract-audio", "--audio-format", "best", "--audio-quality", "0",
-                "--no-continue", "http://www.youtube.com/watch?v="+videoItem[1]])
-
+            downloadArgs.extend("http://www.youtube.com/watch?v="+videoItem[1])
+            output = check_output(downloadArgs)
+            downloadArgs.pop()
+            
             regexResult = re.search('(?<=\[ffmpeg\] Destination: )(.*?)(\..{3})', output, re.I)
             newName = Format_FileName(videoItem[0])
             savePath = os.path.join(cfg['MusicSavePath'],newName +
