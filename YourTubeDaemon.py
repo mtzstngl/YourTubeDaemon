@@ -29,10 +29,10 @@ import re
 import ConfigParser
 import argparse
 import logging
+import subprocess
 
 from apiclient.errors import HttpError
 from apiclient.discovery import build
-from subprocess import check_output, CalledProcessError
 from oauth2client.file import Storage
 from oauth2client.client import flow_from_clientsecrets
 from oauth2client.tools import run
@@ -123,9 +123,10 @@ def Write_Config():
     Remove all the unfinished/interrupted downloads of youtube-dl
 """
 def Remove_Unfinished(folder, pattern):
-  for f in os.listdir(folder):
-    if re.search(pattern, f):
-      os.remove(os.path.join(folder, f))
+  if os.path.exists(folder):
+    for f in os.listdir(folder):
+      if re.search(pattern, f):
+        os.remove(os.path.join(folder, f))
 
 
 """ Format_FileName(input)
@@ -172,7 +173,8 @@ def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
       scope=YOUTUBE_READ_WRITE_SCOPE)
   
   storage = Storage(os.path.join(
-    os.path.dirname(CLIENT_SECRETS_FILE),"{0}-oauth2.json".format(sys.argv[0])))
+    os.path.dirname(CLIENT_SECRETS_FILE),"{0}-oauth2.json".format(
+      os.path.basename(sys.argv[0]))))
   credentials = storage.get()
   
   if credentials is None or credentials.invalid:
@@ -293,9 +295,9 @@ def main():
       limit = args['rate_limit']
   downloadArgs.extend(["--rate-limit", limit])
 
-  Remove_Unfinished(os.path.dirname(os.path.realpath(__file__)), ".*.part")
+  Remove_Unfinished(cfg['MusicSavePath'], ".*.part")
   SESSION = Login(cfg['ApiSecretsFile'])
-  
+
   while True:
     videos = Get_Videos(SESSION, YOURTUBEDAEMON_PLAYLIST_ID)
     if videos is None:
@@ -303,38 +305,47 @@ def main():
       continue
 
     if len(videos) != 0:
-      try:
-          for videoItem in videos:
-            downloadArgs.extend("http://www.youtube.com/watch?v="+videoItem[1])
-            output = check_output(downloadArgs)
-            downloadArgs.pop()
-            
-            regexResult = re.search('(?<=\[ffmpeg\] Destination: )(.*?)(\..{3})', output, re.I)
-            newName = Format_FileName(videoItem[0])
-            savePath = os.path.join(cfg['MusicSavePath'],newName +
-                                    regexResult.group(2))
-            logging.info("Downloaded: {0}".format(savePath))
+        for videoItem in videos:
+          downloadArgs.append("http://www.youtube.com/watch?v="+videoItem[1])
 
-            if not os.path.exists(os.path.dirname(savePath)):
-              logging.info("Creating MusicSavePath:{0}".format(cfg['MusicSavePath']))
-              os.makedirs(os.path.dirname(savePath))
-            os.rename(regexResult.group(0), savePath)
-            
-            try:
-              SESSION.playlistItems().delete(
-                id=videoItem[2]
-              ).execute()
-            except HttpError as e:
-              logging.warning("main: Couldn't remove video from playlist")
-              logging.warning("main args: {0}".format(e.args))
-              logging.warning("main message: {0}".format(e.message))
+          if not os.path.exists(cfg['MusicSavePath']):
+            logging.info("Creating MusicSavePath:{0}".format(cfg['MusicSavePath']))
+            os.makedirs(cfg['MusicSavePath'])
+          
+          procObj = subprocess.Popen(downloadArgs, cwd=cfg['MusicSavePath'],
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+          output = procObj.communicate()
+          downloadArgs.pop()
+          if procObj.returncode != 0:
+            logging.error("Youtube-dl encountered an error")
+            logging.error("YT-dl: {0}".format(procObj.returncode))
+            logging.error("YT-dl: {0}".format(videoItem[1]))
+            logging.error("YT-dl: {0}".format(output))
+            continue
 
-          videos = []
-      except CalledProcessError as e:
-        logging.error("Youtube-dl encountered an error")
-        logging.error("YT-dl: {0}".format(e.returncode))
-        logging.error("YT-dl: {0}".format(e.cmd))
-        logging.error("YT-dl: {0}".format(e.output))
+          regexResult = re.search('(?<=\[ffmpeg\] Destination: )(.*?)(\..{3})',
+                                  output[0], re.I)
+          newName = Format_FileName(videoItem[0])
+          savePath = os.path.join(cfg['MusicSavePath'],newName +
+                                  regexResult.group(2))
+          logging.info("Downloaded: {0}".format(savePath))
+
+          if not os.path.exists(cfg['MusicSavePath']):
+            logging.info("Creating MusicSavePath:{0}".format(cfg['MusicSavePath']))
+            os.makedirs(cfg['MusicSavePath'])
+          os.rename(os.path.join(cfg['MusicSavePath'], regexResult.group(0)), savePath)
+
+          try:
+            SESSION.playlistItems().delete(
+              id=videoItem[2]
+            ).execute()
+          except HttpError as e:
+            logging.warning("main: Couldn't remove video from playlist")
+            logging.warning("main args: {0}".format(e.args))
+            logging.warning("main message: {0}".format(e.message))
+
+        videos = []
 
     time.sleep(cfg['CheckIntervalSec'])
 
