@@ -31,6 +31,7 @@ import argparse
 import logging
 import subprocess
 
+from httplib import BadStatusLine
 from apiclient.errors import HttpError
 from apiclient.discovery import build
 from oauth2client.file import Storage
@@ -221,7 +222,7 @@ def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
           )
         )
       ).execute()
-    except HttpError as e:
+    except (HttpError, BadStatusLine) as e:
       logging.fatal("Init_Playlist: Can't create the playlist")
       logging.fatal("Init_Playlist args: {0}".format(e.args))
       logging.fatal("Init_Playlist message: {0}".format(e.message))
@@ -244,7 +245,7 @@ def Get_Videos(youtube, yourtube_playlistID):
       part="id,snippet",
       playlistId=yourtube_playlistID
     ).execute()
-  except HttpError as e:
+  except (HttpError, BadStatusLine) as e:
     logging.error("Get_Videos: Can't get Videos in Playlist")
     logging.error("Get_Videos message: {0}".format(e.message))
     logging.error("Get_Videos args: {0}".format(e.args))
@@ -281,8 +282,9 @@ def main():
     CONFIGPATH = args['config']
   cfg = Read_Config(CONFIGPATH)
 
-  logging.basicConfig(filename=cfg['LogSavePath'], filemode='w',
-                      level=logging.INFO)
+  logging.basicConfig(filename=cfg['LogSavePath'],filemode='w',
+                      level=logging.INFO,
+                      format="%(asctime)s [%(name)s:%(levelname)s] - %(message)s")
 
   downloadArgs = ["youtube-dl", "-f",
                   "141/172/38/37/46/45/22/102/101/85/84/171/141/120/100/44/43/35/34/83/82/18/17/6/5/139/36/17",
@@ -340,7 +342,7 @@ def main():
             SESSION.playlistItems().delete(
               id=videoItem[2]
             ).execute()
-          except HttpError as e:
+          except (HttpError, BadStatusLine) as e:
             logging.warning("main: Couldn't remove video from playlist")
             logging.warning("main args: {0}".format(e.args))
             logging.warning("main message: {0}".format(e.message))
