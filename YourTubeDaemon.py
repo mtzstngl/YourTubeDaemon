@@ -23,7 +23,6 @@
 
 import httplib2
 import os
-import sys
 import time
 import re
 import ConfigParser
@@ -68,7 +67,7 @@ def Read_Config(path = None):
     else:
       path = os.path.join(os.path.expanduser("~"),
                           ".config/YourTubeDaemon/config.cfg")
-  
+
   config = ConfigParser.SafeConfigParser()
   config.read(path)
 
@@ -99,7 +98,7 @@ def Write_Config():
   else:
     defaultPath = os.path.join(os.path.expanduser("~"),".config/YourTubeDaemon")
   config = ConfigParser.SafeConfigParser()
-  
+
   config.add_section("Settings")
   config.set("Settings", "MusicSavePath", os.path.join(os.path.expanduser("~"),
                                                       "Music/YourTubeDaemon"))
@@ -109,7 +108,7 @@ def Write_Config():
   config.set("Settings", "ApiSecretsFile", os.path.join(defaultPath,
                                                         "client_secrets.json"))
   config.set("Settings", "RateLimit", "None")
-  
+
   if not os.path.exists(defaultPath):
     logging.info("Creating default config path: {0}".format(defaultPath))
     os.makedirs(defaultPath)
@@ -150,14 +149,14 @@ def Format_FileName(input):
   # remove nonalphanumeric characters at the beginning/end
   reCompThree = re.compile('(^[^\w\(]+)|([^\w\)]+$)', re.I)
   input = reCompThree.sub("", input)
-  
+
   return input
 
 
 """ Login(CLIENT_SECRETS_FILE = "client_secrets.json")
         CLIENT_SECRETS_FILE = Path to client_secrets file
     Return: SessionId
-    
+
     Login to your YouTube account using client_secrets.json
     Request read/write permission on YouTube
 """
@@ -172,17 +171,22 @@ def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
   flow = flow_from_clientsecrets(CLIENT_SECRETS_FILE,
       message=MISSING_CLIENT_SECRETS_MESSAGE,
       scope=YOUTUBE_READ_WRITE_SCOPE)
-  
+
   storage = Storage(os.path.join(
-    os.path.dirname(CLIENT_SECRETS_FILE),"{0}-oauth2.json".format(
-      os.path.basename(sys.argv[0]))))
+    os.path.dirname(CLIENT_SECRETS_FILE),"oauth2_token.json"))
   credentials = storage.get()
-  
+
   if credentials is None or credentials.invalid:
     credentials = run(flow, storage)
-    
-  youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
-      http=credentials.authorize(httplib2.Http()))
+
+  try:
+    youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
+        http=credentials.authorize(httplib2.Http()))
+  except BadStatusLine as e:
+    logging.error("Login: httplib returned BadStatusLine")
+    logging.error("Login args: {0}".format(e.args))
+    logging.error("Login message: {0}".format(e.message))
+    youtube = Login(CLIENT_SECRETS_FILE)
 
   return youtube
 
@@ -197,11 +201,17 @@ def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
 def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
   YOURTUBEDAEMON_PLAYLIST_DESCRIPTION = """
       This playlist is used by YourTubeDaemon to identify the videos to download"""
-  
-  playlist_list_response = youtube.playlists().list(
-    part="id,snippet",
-    mine="true"
-  ).execute()
+
+  try:
+    playlist_list_response = youtube.playlists().list(
+      fields="items(id,snippet(title))",
+      part="id,snippet",
+      mine=True
+    ).execute()
+  except BadStatusLine as e:
+    logging.error("Init_Playlist: httplib returned BadStatusLine")
+    logging.error("Init_Playlist args: {0}".format(e.args))
+    logging.error("Init_Playlist message: {0}".format(e.message))
 
   retPlaylist = None
   for playlist in playlist_list_response["items"]:
@@ -222,11 +232,15 @@ def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
           )
         )
       ).execute()
-    except (HttpError, BadStatusLine) as e:
+    except HttpError as e:
       logging.fatal("Init_Playlist: Can't create the playlist")
       logging.fatal("Init_Playlist args: {0}".format(e.args))
       logging.fatal("Init_Playlist message: {0}".format(e.message))
       exit(1)
+    except BadStatusLine as e:
+      logging.error("Init_Playlist: httplib returned BadStatusLine")
+      logging.error("Init_Playlist args: {0}".format(e.args))
+      logging.error("Init_Playlist message: {0}".format(e.message))
     time.sleep(1) #give YouTube time to create the playlist
 
   return retPlaylist
@@ -242,6 +256,7 @@ def Init_Playlist(youtube, YOURTUBEDAEMON_PLAYLIST_NAME = "YourTubeDaemon"):
 def Get_Videos(youtube, yourtube_playlistID):
   try:
     playlistitems_list_response = youtube.playlistItems().list(
+      fields="items(id,snippet(title,resourceId(videoId)))",
       part="id,snippet",
       playlistId=yourtube_playlistID
     ).execute()
@@ -275,7 +290,7 @@ def Get_Videos(youtube, yourtube_playlistID):
 def main():
   YOURTUBEDAEMON_PLAYLIST_ID = None
   SESSION = None
-  
+
   CONFIGPATH = None
   args = ParseArgs()
   if args['config']:
@@ -290,17 +305,20 @@ def main():
                   "141/172/38/37/46/45/22/102/101/85/84/171/141/120/100/44/43/35/34/83/82/18/17/6/5/139/36/17",
                   "-o", "%(id)s.%(ext)s", "--extract-audio", "--audio-format",
                   "best", "--audio-quality", "0", "--no-continue"]
-  if cfg['RateLimit'] != "None" or args['rate_limit']:
+
+  if (cfg['RateLimit'] != "None" and not
+      args['rate_limit']) or (args['rate_limit'] != "None" and args['rate_limit']):
+    limit = None
     if cfg['RateLimit'] != "None":
       limit = cfg['RateLimit']
-    if args['rate_limit']:
+    if args['rate_limit'] != "None" and args['rate_limit']:
       limit = args['rate_limit']
-  downloadArgs.extend(["--rate-limit", limit])
+    downloadArgs.extend(["--rate-limit", limit])
 
   Remove_Unfinished(cfg['MusicSavePath'], ".*.part")
-  SESSION = Login(cfg['ApiSecretsFile'])
 
   while True:
+    SESSION = Login(cfg['ApiSecretsFile'])
     videos = Get_Videos(SESSION, YOURTUBEDAEMON_PLAYLIST_ID)
     if videos is None:
       YOURTUBEDAEMON_PLAYLIST_ID = Init_Playlist(SESSION, cfg['PlaylistName'])
@@ -313,13 +331,17 @@ def main():
           if not os.path.exists(cfg['MusicSavePath']):
             logging.info("Creating MusicSavePath:{0}".format(cfg['MusicSavePath']))
             os.makedirs(cfg['MusicSavePath'])
-          
+
           procObj = subprocess.Popen(downloadArgs, cwd=cfg['MusicSavePath'],
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE)
           output = procObj.communicate()
           downloadArgs.pop()
-          if procObj.returncode != 0:
+          if procObj.returncode == 2:
+            logging.fatal("YT-dl: Youtube-dl error")
+            logging.fatal("YT-dl: {0}".format(output))
+            exit(2)
+          elif procObj.returncode != 0:
             logging.error("Youtube-dl encountered an error")
             logging.error("YT-dl: {0}".format(procObj.returncode))
             logging.error("YT-dl: {0}".format(videoItem[1]))
@@ -339,11 +361,14 @@ def main():
           os.rename(os.path.join(cfg['MusicSavePath'], regexResult.group(0)), savePath)
 
           try:
+            SESSION = Login(cfg['ApiSecretsFile'])
             SESSION.playlistItems().delete(
               id=videoItem[2]
             ).execute()
           except (HttpError, BadStatusLine) as e:
             logging.warning("main: Couldn't remove video from playlist")
+            logging.warning("main videoItem: {0} | {1}".format(videoItem[1],
+                                                               videoItem[2]))
             logging.warning("main args: {0}".format(e.args))
             logging.warning("main message: {0}".format(e.message))
 
