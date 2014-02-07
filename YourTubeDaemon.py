@@ -182,6 +182,10 @@ def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
   try:
     youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
         http=credentials.authorize(httplib2.Http()))
+  except httplib2.ServerNotFoundError as e:
+    exit(2)
+  except HttpError as e:
+    exit(3)
   except BadStatusLine as e:
     logging.error("Login: httplib returned BadStatusLine")
     logging.error("Login args: {0}".format(e.args))
@@ -341,6 +345,21 @@ def main():
             logging.fatal("YT-dl: Youtube-dl error")
             logging.fatal("YT-dl: {0}".format(output))
             exit(2)
+          elif procObj.returncode == 1:
+            logging.warning("YT-dl: Youtube video not available")
+            logging.warning("YT-dl: {0}".format(videoItem[1]))
+            try:
+              SESSION = Login(cfg['ApiSecretsFile'])
+              SESSION.playlistItems().delete(
+                id=videoItem[2]
+              ).execute()
+            except (HttpError, BadStatusLine) as e:
+              logging.warning("main: Couldn't remove video from playlist")
+              logging.warning("main videoItem: {0} | {1}".format(videoItem[1],
+                                                                 videoItem[2]))
+              logging.warning("main args: {0}".format(e.args))
+              logging.warning("main message: {0}".format(e.message))
+            continue
           elif procObj.returncode != 0:
             logging.error("Youtube-dl encountered an error")
             logging.error("YT-dl: {0}".format(procObj.returncode))
