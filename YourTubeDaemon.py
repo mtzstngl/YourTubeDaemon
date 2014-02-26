@@ -372,7 +372,6 @@ def main():
           newName = Format_FileName(videoItem[0])
           savePath = os.path.join(cfg['MusicSavePath'],newName +
                                   regexResult.group(2))
-          #FIXME: this is causing the unicode error; test for non unicode name
           logging.info(u"Downloaded: {0}".format(savePath))
 
           if not os.path.exists(cfg['MusicSavePath']):
