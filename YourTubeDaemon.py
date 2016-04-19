@@ -35,7 +35,7 @@ from apiclient.errors import HttpError
 from apiclient.discovery import build
 from oauth2client.file import Storage
 from oauth2client.client import flow_from_clientsecrets
-from oauth2client.tools import run
+from oauth2client.tools import run_flow
 
 """ ParseArgs()
     Return: object with all the cli arguments
@@ -177,7 +177,7 @@ def Login(CLIENT_SECRETS_FILE = "client_secrets.json"):
   credentials = storage.get()
 
   if credentials is None or credentials.invalid:
-    credentials = run(flow, storage)
+    credentials = run_flow(flow, storage)
 
   try:
     youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION,
